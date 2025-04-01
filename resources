@@ -99,7 +99,7 @@ zip -r lambda-watermark.zip .
 aws lambda create-function \
     --function-name S3ImageWatermark \
     --runtime python3.11 \
-    --role arn:aws:iam::948924638076:role/LambdaS3WatermarkRole \
+    --role <ARN of IAM Role> \
     --handler lambda_function.lambda_handler \
     --timeout 30 \
     --memory-size 256 \
