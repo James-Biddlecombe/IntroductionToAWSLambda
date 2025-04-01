@@ -1,0 +1,115 @@
+
+Create the S3 buckets
+=====================
+- keep default settings
+lambda-image-watermark/input/
+lambda-image-watermark/output/
+
+Create the IAM Role for Lambda
+==============================
+Your Lambda function will need permissions to access both S3 buckets.
+
+Go to IAM > Roles > Create Role.
+Choose AWS Service → Lambda and click Next.
+Attach the following permissions:
+AmazonS3FullAccess
+AWSLambdaBasicExecutionRole
+CloudWatchLogsFullAccess
+Name the role,LambdaS3WatermarkRole, and create it.
+
+Update IAM role so that lambda can assume it
+============================================
+IAM trust relationship
+
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "Service": "lambda.amazonaws.com"
+            },
+            "Action": "sts:AssumeRole"
+        }
+    ]
+}
+
+Create the lambda
+=================
+Open Cloudshell
+
+mkdir lambda-watermark
+cd lambda-watermark
+
+docker run --rm -v "$PWD":/lambda-build -w /lambda-build --entrypoint /bin/bash public.ecr.aws/lambda/python:3.11 -c "pip install pillow -t ."
+
+
+
+cat <<EOF > lambda_function.py
+import boto3
+import os
+from PIL import Image, ImageDraw, ImageFont
+from io import BytesIO
+
+s3 = boto3.client("s3")
+
+def lambda_handler(event, context):
+    bucket_name = event["Records"][0]["s3"]["bucket"]["name"]
+    object_key = event["Records"][0]["s3"]["object"]["key"]
+    
+    # Ensure it's an image from the input folder
+    if not object_key.startswith("input/"):
+        return {"status": "Ignored non-input file"}
+
+    # Download image from S3
+    image_obj = s3.get_object(Bucket=bucket_name, Key=object_key)
+    image = Image.open(BytesIO(image_obj["Body"].read()))
+
+    # Add watermark (Text)
+    draw = ImageDraw.Draw(image)
+    
+    # Choose a font
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 50)
+    except:
+        font = ImageFont.load_default()  # Fallback if custom font isn't available
+    
+    watermark_text = "AWSByteByByte"
+    bbox = draw.textbbox((0, 0), watermark_text, font=font)
+    text_width, text_height = bbox[2] - bbox[0], bbox[3] - bbox[1]
+
+    
+    # Place the watermark at the bottom-right corner
+    position = (image.width - text_width - 20, image.height - text_height - 20)
+    draw.text(position, watermark_text, fill="white", font=font)
+
+    # Save to output folder
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    buffer.seek(0)
+
+    output_key = object_key.replace("input/", "output/")
+    s3.put_object(Bucket=bucket_name, Key=output_key, Body=buffer, ContentType="image/png")
+
+    return {"status": "Success", "output_file": output_key}
+EOF
+
+zip -r lambda-watermark.zip .
+
+aws lambda create-function \
+    --function-name S3ImageWatermark \
+    --runtime python3.11 \
+    --role arn:aws:iam::948924638076:role/LambdaS3WatermarkRole \
+    --handler lambda_function.lambda_handler \
+    --timeout 30 \
+    --memory-size 256 \
+    --zip-file fileb://lambda-watermark.zip
+
+
+Create an S3 Event Notification
+===============================
+go to the S3 bucket > properties > create s3 event notification
+event name: image_upload
+prefix: input/
+event type: put
+LambdaFunction: myWatermarkFunction
